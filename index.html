@@ -277,7 +277,7 @@
 <body>
 
   <script id="news-data" type="application/json">
-  {"updated": "17:30", "FR": {"category": "Droits TV", "headline": "Ligue 1 : diffusion saison 2026-2027 redéfinie", "url": "https://news.google.com/rss/articles/CBMihAJBVV95cUxPV3QzUnk0QkVrUHFrNTM1YjltWHo0M29LaTBVZkFBMEhjcUthSUFIWHgtSTRldW1ZWnVkVm9tVm5CSUZLRFQxcWV3dDBMaUpqd0tFeUtNLS01Y29ZazVjMUl3YUFHTW5wTmFwenpET2pKTFkwejBkdGxNRDFwdXpVVUpBSndwenRn"}, "INT": {"category": "Investment", "headline": "Marc Lore sells Timberwolves, Lynx at $4.5bn", "url": "https://www.sportico.com/business/team-sales/2026/minnesota-timberwolves-lynx-sold-stad-1234942577/"}}
+  {"updated": "", "FR": {"category": "Droits TV", "headline": "LFP : appel d’offres imminent, premiers intéressés en vue", "url": "", "source": ""}, "INT": {"category": "Media rights", "headline": "Premier League valuations surge to US$7bn ahead of 2026/27 season", "url": "https://www.sportspro.com/analysis/finance-investment/premier-league-2026-27-season-tv-rights-sponsors-finances-valuations/", "source": "SportsPro"}}
   </script>
 
   <header>
@@ -355,17 +355,31 @@
       refresh();
     }
 
-    async function refresh() {
+    let refreshing = false;
+
+    // Au réveil du service, la première requête peut échouer : on retente
+    // deux fois avant de conserver les données embarquées dans la page.
+    async function refresh(attempt = 0) {
+      if (refreshing && attempt === 0) return;
+      refreshing = true;
       try {
         const res = await fetch('/api/news', { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data && data.FR) {
-          newsData = data;
-          render();
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.FR) {
+            newsData = data;
+            render();
+          }
+          refreshing = false;
+          return;
         }
       } catch (e) {
         // Version statique sans moteur : on garde les données embarquées.
+      }
+      if (attempt < 2) {
+        setTimeout(() => refresh(attempt + 1), 2000 * (attempt + 1));
+      } else {
+        refreshing = false;
       }
     }
 
@@ -374,14 +388,29 @@
       render();
     }
 
+    function hostLabel(url) {
+      try {
+        const host = new URL(url).hostname.replace(/^www\./, '');
+        return host.includes('news.google.') ? null : host;
+      } catch (e) {
+        return null;
+      }
+    }
+
     function render() {
       const copy = COPY[currentLang];
       const item = newsData[currentLang] || copy.fallback;
+      const url = item.url || '';
+      const usable = /^https?:\/\//.test(url);
 
       document.getElementById('category').textContent = item.category || '';
       document.getElementById('headline').textContent = (item.headline || '').replace(/'/g, '’');
-      document.getElementById('source-link').href = item.url || '#';
-      document.getElementById('source-label').textContent = copy.source;
+
+      const link = document.getElementById('source-link');
+      link.href = usable ? url : '#';
+      link.style.display = usable ? 'inline-block' : 'none';
+      document.getElementById('source-label').textContent = (usable && hostLabel(url)) || copy.source;
+
       document.getElementById('footer-tagline').textContent = copy.tagline;
       document.getElementById('footer-updated').textContent = newsData.updated ? copy.updated(newsData.updated) : '';
 
