@@ -863,6 +863,66 @@ def test_links():
 # SERVEUR
 # ---------------------------------------------------------------------------
 
+WIDGET_PAGE = """<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TERRAIN — widget iPhone</title>
+<style>
+ *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+ body{background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      padding:calc(env(safe-area-inset-top,20px) + 20px) 20px calc(env(safe-area-inset-bottom,20px) + 28px);
+      line-height:1.5}
+ h1{font-size:1.05rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+ .sub{color:#8E8E93;font-size:.82rem;margin-bottom:22px}
+ ol{margin:0 0 22px 18px;font-size:.88rem;color:#D8D8DC}
+ ol li{margin-bottom:7px}
+ button{width:100%;border:none;border-radius:14px;background:#5B8CFF;color:#fff;
+        font-size:1rem;font-weight:600;padding:15px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+ button:active{opacity:.75}
+ .done{background:#1E1E20;color:#5B8CFF}
+ textarea{width:100%;height:230px;margin-top:18px;background:#0C0C0D;color:#9A9AA0;
+          border:1px solid #232326;border-radius:12px;padding:12px;font-family:ui-monospace,Menlo,monospace;
+          font-size:.66rem;line-height:1.35}
+ .note{color:#5A5A5F;font-size:.74rem;margin-top:14px}
+ a{color:#5B8CFF}
+</style></head><body>
+<h1>Widget TERRAIN</h1>
+<div class="sub">Pour l'écran d'accueil et l'écran verrouillé de l'iPhone.</div>
+<ol>
+  <li>Installe <a href="https://apps.apple.com/app/scriptable/id1405459188">Scriptable</a> depuis l'App Store, c'est gratuit.</li>
+  <li>Appuie sur le bouton bleu ci-dessous pour copier le script.</li>
+  <li>Ouvre Scriptable, appuie sur le + en haut à droite, colle, puis renomme le script TERRAIN.</li>
+  <li>Reviens à l'écran d'accueil, appui long, +, cherche Scriptable, choisis la taille bandeau.</li>
+  <li>Appui long sur le widget, Modifier le widget, Script : TERRAIN. Paramètre : FR ou INT.</li>
+</ol>
+<button id="copy">Copier le script</button>
+<textarea readonly id="code">__SCRIPT__</textarea>
+<div class="note">Si le bouton ne fonctionne pas, appuie longuement dans le cadre, Tout sélectionner, puis Copier.</div>
+<script>
+document.getElementById('copy').addEventListener('click', async function () {
+  var ta = document.getElementById('code');
+  try {
+    await navigator.clipboard.writeText(ta.value);
+  } catch (e) {
+    ta.focus(); ta.setSelectionRange(0, ta.value.length); document.execCommand('copy');
+  }
+  this.textContent = 'Script copié';
+  this.className = 'done';
+});
+</script>
+</body></html>"""
+
+
+def build_widget_page():
+    try:
+        with open("widget-terrain.js", "r", encoding="utf-8") as f:
+            script = f.read()
+    except Exception:
+        script = "// widget-terrain.js introuvable sur le serveur"
+    escaped = script.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return WIDGET_PAGE.replace("__SCRIPT__", escaped)
+
+
 class TerrainHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -922,6 +982,12 @@ class TerrainHandler(http.server.SimpleHTTPRequestHandler):
             }
             self._send(json.dumps(manifest_content, ensure_ascii=False),
                        'application/json; charset=utf-8', cache="public, max-age=3600")
+            return
+
+        # Page d'installation du widget iPhone : elle affiche le script
+        # Scriptable et permet de le copier d'un seul appui, depuis le telephone.
+        if self.path in ['/widget', '/widget/']:
+            self._send(build_widget_page(), 'text/html; charset=utf-8')
             return
 
         # Le service worker ne doit jamais etre servi depuis un cache navigateur,
