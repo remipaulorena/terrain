@@ -575,31 +575,83 @@ def evaluate_news(lang, candidates_block):
 # RESOLUTION DU LIEN
 # ---------------------------------------------------------------------------
 
+STOPWORDS = {
+    "dans", "pour", "avec", "sans", "sous", "leur", "leurs", "cette", "cettes",
+    "elle", "elles", "nous", "vous", "plus", "moins", "tout", "tous", "toute",
+    "toutes", "entre", "apres", "avant", "chez", "vers", "depuis", "selon",
+    "encore", "aussi", "mais", "donc", "alors", "quand", "comme", "meme",
+    "with", "from", "that", "this", "they", "their", "will", "have", "been",
+    "into", "over", "after", "before", "than", "them", "were", "what", "when",
+    "sport", "sports", "news", "info", "article",
+}
+
+
+def significant_words(text):
+    """Mots porteurs de sens d'un titre, sans accents ni mots outils."""
+    normalized = (text or "").lower()
+    for a, b in (("àâä", "a"), ("éèêë", "e"), ("îï", "i"), ("ôö", "o"),
+                 ("ùûü", "u"), ("ç", "c")):
+        for ch in a:
+            normalized = normalized.replace(ch, b)
+    words = re.findall(r"[a-z0-9€$£]{4,}", normalized)
+    return {w for w in words if w not in STOPWORDS}
+
+
+def titles_related(headline, source_title):
+    """Le titre publie doit parler du meme sujet que le titre source.
+    C'est ce controle qui empeche d'afficher un titre sur les droits TV
+    au-dessus d'un lien vers un article sur le sponsoring maillot."""
+    a, b = significant_words(headline), significant_words(source_title)
+    if a & b:
+        return True
+    return difflib.SequenceMatcher(None, (headline or "").lower(),
+                                   (source_title or "").lower()).ratio() >= 0.45
+
+
 def match_candidate(raw_ref, headline, candidates):
-    """Retrouve le candidat choisi par le modele : d'abord par numero,
-    sinon par rapprochement du titre reecrit avec les titres sources."""
+    """Retrouve le candidat choisi par le modele : d'abord par numero, sinon par
+    rapprochement du titre. Dans les deux cas le sujet doit concorder, sinon on
+    ne publie rien : un lien qui ne correspond pas au titre est pire que pas de
+    mise a jour du tout."""
     if not candidates:
         return None
 
     by_id = {c["id"]: c for c in candidates}
-    ref = (raw_ref or "").strip().strip('[]').strip()
-    # On ne lit un numero que si la reponse est bien un numero : si le modele a
-    # malgre tout recrache une URL, ses chiffres ne doivent pas etre pris pour un ID.
-    if re.fullmatch(r'\d{1,2}', ref):
-        candidate = by_id.get(int(ref))
-        if candidate:
-            return candidate
+    ref = (raw_ref or "").strip()
+    # Un numero, meme entoure de ponctuation. Jamais les chiffres d'une URL.
+    candidate = None
+    if "http" not in ref.lower():
+        digits = re.findall(r'\d{1,2}', ref)
+        if digits:
+            candidate = by_id.get(int(digits[0]))
+
+    if candidate and titles_related(headline, candidate["title"]):
+        return candidate
+
+    if candidate:
+        print(f"  -> Numero {candidate['id']} incoherent avec le titre publie, verification par titre.", flush=True)
 
     titles = [c["title"] for c in candidates]
-    close = difflib.get_close_matches(headline, titles, n=1, cutoff=0.35)
+    close = difflib.get_close_matches(headline, titles, n=1, cutoff=0.30)
     if close:
         for c in candidates:
-            if c["title"] == close[0]:
-                print(f"  -> Numero absent, rapprochement par titre : {c['title'][:60]}", flush=True)
+            if c["title"] == close[0] and titles_related(headline, c["title"]):
+                print(f"  -> Rapprochement par titre : {c['title'][:60]}", flush=True)
                 return c
 
-    print("  -> Numero absent et rapprochement impossible, on prend le meilleur score.", flush=True)
-    return candidates[0]
+    # Dernier essai : le candidat qui partage le plus de mots avec le titre publie.
+    words = significant_words(headline)
+    best, best_score = None, 0
+    for c in candidates:
+        overlap = len(words & significant_words(c["title"]))
+        if overlap > best_score:
+            best, best_score = c, overlap
+    if best and best_score >= 2:
+        print(f"  -> Rapprochement par mots-cles : {best['title'][:60]}", flush=True)
+        return best
+
+    print("  -> Impossible de relier le titre publie a une source, publication annulee.", flush=True)
+    return None
 
 
 def final_link(candidate):
