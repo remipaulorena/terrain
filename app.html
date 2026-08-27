@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>TERRAIN</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏟️</text></svg>">
-  <link rel="manifest" href="manifest.json">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <meta name="apple-mobile-web-app-title" content="TERRAIN">
   <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -277,7 +279,7 @@
 <body>
 
   <script id="news-data" type="application/json">
-  {"updated": "", "FR": {"category": "Droits TV", "headline": "LFP : appel d’offres imminent, premiers intéressés en vue", "url": "", "source": ""}, "INT": {"category": "Media rights", "headline": "Premier League valuations surge to US$7bn ahead of 2026/27 season", "url": "https://www.sportspro.com/analysis/finance-investment/premier-league-2026-27-season-tv-rights-sponsors-finances-valuations/", "source": "SportsPro"}}
+  {"updated": "", "FR": {"category": "Droits TV", "headline": "Droits TV : la LFP envisage un nouvel appel d’offres", "url": "https://www.eurosport.fr/football/ligue-1/2026-2027/droits-tv-de-la-ligue-1-la-lfp-envisage-un-appel-doffres_sto23331206/story.shtml", "source": "Eurosport"}, "INT": {"category": "Investment", "headline": "Unrivaled Hoops valuation hits $650M", "url": "https://www.sportico.com/leagues/basketball/2026/unrivaled-basketball-valuation-funding-raise-1234942880/", "source": "Sportico"}}
   </script>
 
   <header>
@@ -388,10 +390,21 @@
       render();
     }
 
+    // Dernier garde-fou côté page : un lien de tracking ou d'infrastructure
+    // ne doit jamais s'afficher comme une source.
+    const BLOCKED_HOSTS = [
+      'google.com', 'google.fr', 'google-analytics.com', 'googletagmanager.com',
+      'gstatic.com', 'googleapis.com', 'doubleclick.net', 'youtube.com',
+      'facebook.com', 'twitter.com', 'x.com', 't.co', 'linkedin.com',
+      'schema.org', 'w3.org'
+    ];
+
     function hostLabel(url) {
       try {
-        const host = new URL(url).hostname.replace(/^www\./, '');
-        return host.includes('news.google.') ? null : host;
+        const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+        const root = host.split('.').slice(-2).join('.');
+        if (BLOCKED_HOSTS.includes(root) || BLOCKED_HOSTS.includes(host)) return null;
+        return host;
       } catch (e) {
         return null;
       }
@@ -406,10 +419,11 @@
       document.getElementById('category').textContent = item.category || '';
       document.getElementById('headline').textContent = (item.headline || '').replace(/'/g, '’');
 
+      const label = usable ? hostLabel(url) : null;
       const link = document.getElementById('source-link');
-      link.href = usable ? url : '#';
-      link.style.display = usable ? 'inline-block' : 'none';
-      document.getElementById('source-label').textContent = (usable && hostLabel(url)) || copy.source;
+      link.href = label ? url : '#';
+      link.style.display = label ? 'inline-block' : 'none';
+      document.getElementById('source-label').textContent = label || copy.source;
 
       document.getElementById('footer-tagline').textContent = copy.tagline;
       document.getElementById('footer-updated').textContent = newsData.updated ? copy.updated(newsData.updated) : '';
@@ -460,6 +474,14 @@
     });
 
     initNews();
+
+    // Service worker : l'app s'ouvre depuis le cache, sans attendre le reveil
+    // du service. Le contenu se met a jour ensuite, en arriere-plan.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
   </script>
 </body>
 </html>

@@ -141,37 +141,93 @@ def is_google_news(url):
     return "news.google." in (url or "")
 
 
-def resolve_google_news(url):
+# Domaines qui ne sont jamais un article : infrastructure, mesure d'audience,
+# publicite, reseaux sociaux. Compares sur le domaine racine, pas en sous-chaine.
+BLOCKED_DOMAINS = {
+    "google.com", "google.fr", "google.co.uk", "google-analytics.com",
+    "googletagmanager.com", "googleapis.com", "googleusercontent.com",
+    "googlesyndication.com", "googleadservices.com", "gstatic.com", "ggpht.com",
+    "doubleclick.net", "youtube.com", "youtu.be", "blogger.com", "gvt1.com",
+    "facebook.com", "fbcdn.net", "twitter.com", "x.com", "t.co", "linkedin.com",
+    "instagram.com", "pinterest.com", "whatsapp.com", "tiktok.com",
+    "schema.org", "w3.org", "cloudflare.com", "jsdelivr.net", "cdnjs.com",
+    "gmpg.org", "wp.com", "gravatar.com", "adobe.com", "sentry.io", "hotjar.com",
+    "cookielaw.org", "onetrust.com", "didomi.io", "sddan.com", "criteo.com",
+}
+
+
+def host_of(url):
+    try:
+        return url.split("/")[2].lower().split("@")[-1].split(":")[0]
+    except IndexError:
+        return ""
+
+
+def root_domain(host):
+    """Domaine racine approximatif : suffisant pour comparer deux hotes."""
+    parts = (host or "").replace("www.", "", 1).split(".")
+    if len(parts) <= 2:
+        return ".".join(parts)
+    # Gere les suffixes composes du type .co.uk / .com.au
+    if parts[-2] in ("co", "com", "org", "net", "gov", "ac") and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def is_publisher_url(url, expected_host=None):
+    """Vrai si l'URL pointe vers un article de media.
+    Trois conditions, chacune ayant deja laisse passer une erreur :
+      - le domaine racine n'est pas un domaine technique (google-analytics et co),
+      - l'URL a un vrai chemin d'article, pas une simple page d'accueil,
+      - si le flux indique l'editeur, le domaine doit correspondre."""
+    if not url or not url.startswith("http"):
+        return False
+    host = host_of(url)
+    if len(host) < 4 or "." not in host:
+        return False
+    if root_domain(host) in BLOCKED_DOMAINS:
+        return False
+
+    path = url.split("/", 3)[3] if url.count("/") >= 3 else ""
+    if len(path.strip("/")) < 3:
+        return False
+
+    if expected_host:
+        return root_domain(host) == root_domain(expected_host)
+    return True
+
+
+def resolve_google_news(url, expected_host=None):
     """Remonte de l'URL encodee Google News vers l'article de l'editeur.
     Retourne l'URL d'origine si la resolution echoue."""
     if not is_google_news(url):
         return url
     # 1. L'identifiant Google encode souvent l'URL de l'editeur en base64.
-    decoded = decode_google_news_id(url)
+    decoded = decode_google_news_id(url, expected_host)
     if decoded:
         return decoded
 
     # 2. Sinon on suit la redirection et on lit la page interstitielle.
     try:
         final_url, body = http_get(url, RESOLVE_TIMEOUT, max_bytes=200000)
-        if final_url and not is_google_news(final_url):
+        if final_url and is_publisher_url(final_url, expected_host):
             return final_url
 
         html = body.decode("utf-8", errors="ignore")
         match = re.search(r'data-n-au="(https?://[^"]+)"', html)
-        if match:
+        if match and is_publisher_url(match.group(1), expected_host):
             return match.group(1)
         for candidate in re.findall(r'https?://[^\s"\'<>\\]+', html):
-            if is_publisher_url(candidate):
+            if is_publisher_url(candidate, expected_host):
                 return candidate
     except Exception:
         pass
     return url
 
 
-def decode_google_news_id(url):
-    """Les identifiants d'articles Google News contiennent fréquemment l'URL
-    de l'éditeur en base64. On la récupère sans appel réseau."""
+def decode_google_news_id(url, expected_host=None):
+    """Les identifiants d'articles Google News contiennent frequemment l'URL
+    de l'editeur en base64. On la recupere sans appel reseau."""
     match = re.search(r'/(?:rss/)?(?:articles|read)/([A-Za-z0-9_\-]+)', url or "")
     if not match:
         return None
@@ -182,25 +238,10 @@ def decode_google_news_id(url):
         return None
     text = raw.decode("utf-8", errors="ignore")
     for candidate in re.findall(r'https?://[^\s\x00-\x1f"\'<>\\]+', text):
-        if is_publisher_url(candidate):
-            return candidate.rstrip('.,;)\x01\x02\x03')
+        candidate = candidate.rstrip('.,;)\x01\x02\x03')
+        if is_publisher_url(candidate, expected_host):
+            return candidate
     return None
-
-
-def is_publisher_url(url):
-    """Vrai si l'URL pointe vers un média, pas vers l'infrastructure Google."""
-    if not url or not url.startswith("http"):
-        return False
-    try:
-        host = url.split("/")[2].lower()
-    except IndexError:
-        return False
-    if len(host) < 4 or "." not in host:
-        return False
-    return not any(bad in host for bad in (
-        "google.", "gstatic.", "googleapis.", "googleusercontent.", "ggpht.",
-        "youtube.", "schema.org", "w3.org"
-    ))
 
 
 def url_is_reachable(url):
@@ -245,17 +286,26 @@ def fetch_one_source(source, signals, noise):
         if not title or not link:
             continue
 
+        # Google News indique l'editeur reel de l'article dans la balise <source>.
+        # C'est la reference qui permet de verifier le lien resolu.
+        publisher = getattr(entry, 'source', None) or {}
+        publisher_host = host_of(publisher.get('href', '')) if hasattr(publisher, 'get') else ''
+        publisher_name = (publisher.get('title', '') if hasattr(publisher, 'get') else '') or source["name"]
+
         score = score_item(title, signals, noise)
         if index < 3:
             score += 1
-        # Un flux d'editeur donne un lien direct : on le prefere a Google News.
+        # Un flux d'editeur donne un lien direct, donc une source toujours
+        # affichable. On le prefere nettement a Google News, dont le lien doit
+        # etre resolu et peut echouer.
         if not is_google_news(link):
-            score += 2
+            score += 4
 
         items.append({
             "title": title,
             "link": link,
-            "source": source["name"],
+            "source": publisher_name if is_google_news(link) else source["name"],
+            "publisher_host": publisher_host,
             "score": score
         })
     return items
@@ -295,8 +345,9 @@ def vet_links(items):
     def vet(item):
         if not is_google_news(item["link"]):
             return item
-        url = resolve_google_news(item["link"])
-        if is_google_news(url) or not url_is_reachable(url):
+        expected = item.get("publisher_host") or None
+        url = resolve_google_news(item["link"], expected)
+        if not is_publisher_url(url, expected) or not url_is_reachable(url):
             return None
         item["link"] = url
         return item
@@ -555,7 +606,7 @@ def final_link(candidate):
     """Les liens ont deja ete assainis par vet_links : on refuse simplement de
     publier quoi que ce soit qui ne soit pas une URL d'editeur."""
     url = candidate.get("link", "")
-    if is_google_news(url) or not is_publisher_url(url):
+    if is_google_news(url) or not is_publisher_url(url, candidate.get("publisher_host") or None):
         print("  -> Lien inexploitable pour le titre retenu, publication annulee.", flush=True)
         return None
     return url
@@ -606,6 +657,16 @@ def save_state():
         pass
 
 
+def sanitize_loaded_state():
+    """Un etat sauvegarde par une version precedente peut contenir un lien
+    douteux : on le vide plutot que de le reafficher."""
+    for lang in ("FR", "INT"):
+        url = current_news.get(lang, {}).get("url", "")
+        if url and not is_publisher_url(url):
+            print(f"[BOOT] Lien invalide ecarte pour {lang} : {url[:70]}", flush=True)
+            current_news[lang]["url"] = ""
+
+
 def load_state():
     """Au demarrage, on repart de la derniere information connue plutot que
     d'afficher un ecran d'attente : state.json d'abord, sinon le JSON embarque
@@ -616,6 +677,7 @@ def load_state():
                 data = json.load(f)
             if data.get("FR", {}).get("headline"):
                 current_news.update(data)
+                sanitize_loaded_state()
                 print("[BOOT] Etat repris depuis state.json", flush=True)
                 return
     except Exception:
@@ -632,6 +694,7 @@ def load_state():
                 data = json.loads(match.group(1).strip())
                 if data.get("FR", {}).get("headline"):
                     current_news.update(data)
+                    sanitize_loaded_state()
                     print(f"[BOOT] Etat repris depuis {filename}", flush=True)
                     return
         except Exception:
@@ -788,16 +851,34 @@ class TerrainHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == '/manifest.json':
             manifest_content = {
+                "id": "/",
                 "short_name": APP_NAME.title(),
                 "name": f"{APP_NAME} — Sport business",
+                "description": "L'info qui compte dans le sport business, une seule à la fois.",
                 "start_url": "/?pwa=1",
+                "scope": "/",
                 "display": "standalone",
+                "orientation": "portrait",
                 "background_color": "#000000",
-                "theme_color": "#000000"
+                "theme_color": "#000000",
+                "lang": "fr",
+                "icons": [
+                    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                    {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+                ]
             }
             self._send(json.dumps(manifest_content, ensure_ascii=False),
-                       'application/json; charset=utf-8', cache="public, max-age=86400")
+                       'application/json; charset=utf-8', cache="public, max-age=3600")
             return
+
+        # Le service worker ne doit jamais etre servi depuis un cache navigateur,
+        # sinon une mise a jour de l'app ne se propage plus.
+        if self.path == '/sw.js':
+            if os.path.exists("sw.js"):
+                with open("sw.js", 'rb') as f:
+                    self._send(f.read(), 'application/javascript; charset=utf-8')
+                return
 
         if self.path in ['/', '/index.html', '/app.html']:
             filename = "app.html" if os.path.exists("app.html") else "index.html"
